@@ -47,10 +47,8 @@ It helps students track expenses, set goals, analyze spending habits, and receiv
 
 ---
 
-## 📷 Screenshot
-![Dashboard Screenshot](screenshot.png)
 
----
+
 
 ## 📦 Installation & Usage
 
