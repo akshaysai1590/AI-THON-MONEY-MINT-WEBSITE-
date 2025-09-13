@@ -12,6 +12,7 @@ It helps students track expenses, set goals, analyze spending habits, and receiv
 - Predictive analytics line chart (Chart.js).
 - Expense categories breakdown via doughnut chart.
 - Budget alerts & quick actions.
+- *SAVINGS AND MONTHLY BUDGET CAN BE CONTROLLED IN PROFILE SECTION.
 
 ### 💸 Expenses
 - View and manage recent transactions.
