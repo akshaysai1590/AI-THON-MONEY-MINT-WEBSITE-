@@ -139,16 +139,103 @@
   </aside>
   <!-- Main -->
   <main class="main" id="content"></main>
+
   <script>
-    // Page templates
+    /*******************************
+     * Data persistence & defaults
+     *******************************/
+    const STORAGE_KEYS = {
+      stipend: 'mm_stipend',
+      savings: 'mm_savings',
+      expenses: 'mm_expenses',
+      goals: 'mm_goals',
+      alerts: 'mm_alerts',
+      quickActions: 'mm_quickActions',
+      lastPage: 'mm_lastPage'
+    };
+
+    // Default values
+    const DEFAULTS = {
+      stipend: 25000,
+      savings: 12000,
+      expenses: [], // {id, category, amount, note, date}
+      goals: [], // {id, name, saved, target}
+      alerts: [], // {id, text, amount, isBill}
+      quickActions: [] // {label, amount}
+    };
+
+    // Simple ID generator
+    function genId(prefix='id') {
+      return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+    }
+
+    // Safe HTML escape
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, function (m) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m];
+      });
+    }
+
+    // Local state (will be initialized)
+    let stipend = DEFAULTS.stipend;
+    let savingsTotal = DEFAULTS.savings;
+    let expenses = [];
+    let goals = [];
+    let alerts = [];
+    let quickActions = [];
+
+    // Chart instances
+    let lineChartInstance = null;
+    let pieChartInstance = null;
+
+    function loadStorage() {
+      stipend = Number(localStorage.getItem(STORAGE_KEYS.stipend) ?? DEFAULTS.stipend);
+      if (!Number.isFinite(stipend) || stipend <= 0) stipend = DEFAULTS.stipend;
+
+      savingsTotal = Number(localStorage.getItem(STORAGE_KEYS.savings) ?? DEFAULTS.savings);
+      if (!Number.isFinite(savingsTotal) || savingsTotal < 0) savingsTotal = DEFAULTS.savings;
+
+      try {
+        expenses = JSON.parse(localStorage.getItem(STORAGE_KEYS.expenses) || '[]');
+        if (!Array.isArray(expenses)) expenses = [];
+      } catch (e) { expenses = []; }
+
+      try {
+        goals = JSON.parse(localStorage.getItem(STORAGE_KEYS.goals) || '[]');
+        if (!Array.isArray(goals)) goals = [];
+      } catch (e) { goals = []; }
+
+      try {
+        alerts = JSON.parse(localStorage.getItem(STORAGE_KEYS.alerts) || '[]');
+        if (!Array.isArray(alerts)) alerts = [];
+      } catch (e) { alerts = []; }
+
+      try {
+        quickActions = JSON.parse(localStorage.getItem(STORAGE_KEYS.quickActions) || '[]');
+        if (!Array.isArray(quickActions)) quickActions = [];
+      } catch (e) { quickActions = []; }
+    }
+
+    function saveStorage() {
+      localStorage.setItem(STORAGE_KEYS.stipend, String(stipend));
+      localStorage.setItem(STORAGE_KEYS.savings, String(savingsTotal));
+      localStorage.setItem(STORAGE_KEYS.expenses, JSON.stringify(expenses));
+      localStorage.setItem(STORAGE_KEYS.goals, JSON.stringify(goals));
+      localStorage.setItem(STORAGE_KEYS.alerts, JSON.stringify(alerts));
+      localStorage.setItem(STORAGE_KEYS.quickActions, JSON.stringify(quickActions));
+    }
+
+    /*******************************
+     * Page templates (HTML strings)
+     *******************************/
     const pages = {
       dashboard: `
         <h2>Dashboard</h2>
         <div class="summary">
-          <div class="card"><h3>Monthly Spend</h3><p>₹18,200</p></div>
-          <div class="card"><h3>Remaining Budget</h3><p>₹6,800</p></div>
-          <div class="card"><h3>Upcoming Bills</h3><p>₹2,400</p></div>
-          <div class="card"><h3>Savings</h3><p>₹12,000</p></div>
+          <div class="card"><h3>Monthly Spend</h3><p id="monthlySpendValue">₹0</p></div>
+          <div class="card"><h3>Remaining Budget</h3><p id="remainingBudgetValue">₹0</p></div>
+          <div class="card"><h3>Upcoming Bills</h3><p id="upcomingBillsValue">₹0</p></div>
+          <div class="card"><h3>Savings</h3><p id="savingsValue">₹0</p></div>
         </div>
         <div class="grid">
           <div class="section"><h3>Predictive Analytics</h3>
@@ -160,16 +247,14 @@
         </div>
         <div class="grid" style="margin-top:20px">
           <div class="section"><h3>Budget Alerts</h3>
-            <ul class="list" id="dashboardAlerts">
-              <li><span class="list-item-content">⚠ 85% of monthly budget spent</span><button class="delete-btn" onclick="deleteItem(this)">×</button></li>
-              <li><span class="list-item-content">📌 Rent due in 3 days</span><button class="delete-btn" onclick="deleteItem(this)">×</button></li>
-            </ul>
+            <ul class="list" id="dashboardAlerts"></ul>
           </div>
           <div class="section"><h3>Quick Actions</h3>
+            <ul class="list" id="quickActionsList"></ul>
             <div class="form-inline">
-              <input type="text" placeholder="Add quick expense (₹)">
-              <button>Add</button>
-              <button class="delete-all-btn" onclick="clearQuickExpenses()">Clear</button>
+              <input type="text" id="quickExpenseInput" placeholder="Add quick expense (e.g. Coffee - 80 or 80)">
+              <button onclick="addQuickExpense()">Add</button>
+              <button class="delete-all-btn" onclick="clearAllQuickActions()">Clear</button>
             </div>
           </div>
         </div>
@@ -177,11 +262,7 @@
       expenses: `
         <h2>Expenses</h2>
         <div class="section"><h3>Recent Transactions</h3>
-          <ul class="list" id="expenseList">
-            <li><span class="list-item-content">🍕 Food – ₹450</span><button class="delete-btn" onclick="deleteItem(this)">×</button></li>
-            <li><span class="list-item-content">🚌 Transport – ₹120</span><button class="delete-btn" onclick="deleteItem(this)">×</button></li>
-            <li><span class="list-item-content">🎬 Entertainment – ₹300</span><button class="delete-btn" onclick="deleteItem(this)">×</button></li>
-          </ul>
+          <ul class="list" id="expenseList"></ul>
           <div class="form-inline">
             <input type="text" id="expenseName" placeholder="Category (e.g. Food)">
             <input type="number" id="expenseAmount" placeholder="Amount (₹)">
@@ -193,22 +274,7 @@
       goals: `
         <h2>Goals</h2>
         <div class="section"><h3>Savings Goals</h3>
-          <ul class="list" id="goalsList">
-            <li>
-              <div class="list-item-content">
-                🏖 Trip fund – ₹5,000 / ₹20,000
-                <div class="progress-bar"><div class="progress-fill" style="width:25%"></div></div>
-              </div>
-              <button class="delete-btn" onclick="deleteItem(this)">×</button>
-            </li>
-            <li>
-              <div class="list-item-content">
-                💻 New Laptop – ₹12,000 / ₹50,000
-                <div class="progress-bar"><div class="progress-fill" style="width:24%"></div></div>
-              </div>
-              <button class="delete-btn" onclick="deleteItem(this)">×</button>
-            </li>
-          </ul>
+          <ul class="list" id="goalsList"></ul>
           <div class="form-inline">
             <input type="text" id="goalName" placeholder="Goal name">
             <input type="number" id="goalTarget" placeholder="Target (₹)">
@@ -230,12 +296,9 @@
       alerts: `
         <h2>Alerts</h2>
         <div class="section"><h3>Notifications</h3>
-          <ul class="list" id="alertsList">
-            <li><span class="list-item-content">⚠ Electricity bill due tomorrow – ₹1,200</span><button class="delete-btn" onclick="deleteItem(this)">×</button></li>
-            <li><span class="list-item-content">📌 Mobile recharge reminder – ₹399</span><button class="delete-btn" onclick="deleteItem(this)">×</button></li>
-          </ul>
+          <ul class="list" id="alertsList"></ul>
           <div class="form-inline">
-            <input type="text" id="alertText" placeholder="Set custom alert (e.g. Food > 3000)">
+            <input type="text" id="alertText" placeholder="Set custom alert (e.g. Electricity bill - 1200)">
             <button onclick="addAlert()">Add</button>
             <button class="delete-all-btn" onclick="clearAllAlerts()">Delete All</button>
           </div>
@@ -248,35 +311,13 @@
             <div class="news-item-title">Indian Stock Market Sees Broad-Based Rally 📈</div>
             <p class="news-item-text">Indian equity markets have shown strong positive momentum this week, with the Nifty and Sensex both making significant gains. The rally is attributed to several key factors, including expectations of a US Federal Reserve rate cut, improved sentiment around US-India trade talks, and domestic policy reforms. Analysts expect the uptrend to continue, with key support levels holding firm.</p>
           </div>
-          
           <div class="news-item">
             <div class="news-item-title">Infosys Announces Major Share Buyback 🔄</div>
             <p class="news-item-text">IT giant Infosys has announced an ₹18,000 crore share buyback, its largest ever. The move, which comes amid a broader downturn in IT stocks, aims to boost shareholder value. This news has led to speculation that other major IT firms like Tata Consultancy Services (TCS) and Wipro may also consider similar buyback programs.</p>
           </div>
-          
           <div class="news-item">
             <div class="news-item-title">SEBI Crackdown Hits Stock Exchange Valuations 📉</div>
             <p class="news-item-text">The Securities and Exchange Board of India (SEBI)'s aggressive campaign to curb high-risk derivatives trading has caused a massive market capitalization wipeout. Shares of stock exchanges BSE and unlisted shares of NSE have plunged, wiping out a combined ₹1.75 lakh crore. The regulator's preference for longer-tenure contracts over the popular weekly expiries is a major concern for market participants and brokerage firms.</p>
-          </div>
-          
-          <div class="news-item">
-            <div class="news-item-title">GST Reforms to Boost Consumption and Cut Prices 💰</div>
-            <p class="news-item-text">The Indian government's move to simplify the Goods and Services Tax (GST) structure and exempt certain items, including medicines and medical devices, is set to go into effect on September 22. This reform is expected to boost consumer demand and lead to a reduction in prices for various goods and services, including two-wheelers, which could see a price drop of up to ₹24,500.</p>
-          </div>
-          
-          <div class="news-item">
-            <div class="news-item-title">Retail Inflation Rises, But Stays Within RBI's Target Range 📊</div>
-            <p class="news-item-text">India's retail inflation rose slightly in August, snapping a nine-month streak of declines. However, it remains within the Reserve Bank of India's (RBI) target range. The data is a key factor for the central bank as it assesses its future monetary policy decisions.</p>
-          </div>
-          
-          <div class="news-item">
-            <div class="news-item-title">Urban Company IPO Heavily Subscribed 🚀</div>
-            <p class="news-item-text">The Initial Public Offering (IPO) of home services company Urban Company has seen overwhelming demand, being booked over 100 times on its final day. The strong subscription indicates robust investor appetite for new-age technology companies, even amidst a volatile market environment.</p>
-          </div>
-          
-          <div class="news-item">
-            <div class="news-item-title">US-India Trade Relations and Tariffs in Focus 🇺🇸🇮🇳</div>
-            <p class="news-item-text">Tensions over trade have been a major point of discussion this week. The US Treasury has called on G7 and EU countries to impose tariffs on India and China for their continued purchase of Russian oil. Meanwhile, India is actively engaged in dialogue with the US to negotiate a free trade pact, with hopes that a deal will soon be finalized. President Donald Trump has also acknowledged that his tariff proposals have "caused a rift" with India.</p>
           </div>
         </div>
       `,
@@ -291,147 +332,553 @@
         </div>
         <div class="section"><h3>Preferences</h3>
           <ul class="list">
-            <li><span class="list-item-content">💰 Monthly Budget: ₹25,000</span></li>
+            <li>
+              <div class="list-item-content">
+                💰 Monthly Budget:
+                <div class="form-inline" style="margin-top:8px">
+                  <input type="number" id="stipendInput" placeholder="25000">
+                  <button onclick="saveStipend()">Save</button>
+                </div>
+              </div>
+            </li>
+            <li>
+              <div class="list-item-content">
+                💾 Current Savings:
+                <div class="form-inline" style="margin-top:8px">
+                  <input type="number" id="savingsInput" placeholder="12000">
+                  <button onclick="saveSavings()">Save</button>
+                </div>
+              </div>
+            </li>
             <li><span class="list-item-content">📅 Saving Style: Weekly</span></li>
           </ul>
         </div>
       `
     };
+
+    /*******************************
+     * Rendering functions
+     *******************************/
     const main = document.getElementById("content");
     const navLinks = document.querySelectorAll(".nav a");
-    
-    // Load page
-    function loadPage(page) {
-      main.innerHTML = pages[page] || "<h2>Coming soon...</h2>";
-      if (page === "dashboard") initCharts();
+
+    function setActiveNav(page) {
+      navLinks.forEach(l => {
+        if (l.dataset.page === page) l.classList.add('active');
+        else l.classList.remove('active');
+      });
     }
-    
-    // Sidebar navigation
+
+    function loadPage(page) {
+      const last = localStorage.getItem(STORAGE_KEYS.lastPage) || 'dashboard';
+      const toLoad = page || last || 'dashboard';
+      localStorage.setItem(STORAGE_KEYS.lastPage, toLoad);
+      setActiveNav(toLoad);
+      main.innerHTML = pages[toLoad] || "<h2>Coming soon...</h2>";
+      // page-specific renders
+      if (toLoad === "dashboard") {
+        renderDashboard();
+      } else if (toLoad === "expenses") {
+        renderExpenses();
+      } else if (toLoad === "goals") {
+        renderGoals();
+      } else if (toLoad === "alerts") {
+        renderAlerts();
+      } else if (toLoad === "profile") {
+        renderProfile();
+      }
+    }
+
     navLinks.forEach(link => {
       link.addEventListener("click", () => {
-        navLinks.forEach(l => l.classList.remove("active"));
-        link.classList.add("active");
-        loadPage(link.dataset.page);
+        const page = link.dataset.page;
+        loadPage(page);
       });
     });
-    
-    // Delete individual item function
-    function deleteItem(button) {
-      if(confirm("Are you sure you want to delete this item?")) {
-        button.parentElement.remove();
+
+    // Update dashboard numbers & lists & charts
+    function renderDashboard() {
+      // elements may not exist if template not fully loaded
+      const monthlySpendEl = document.getElementById('monthlySpendValue');
+      const remainingEl = document.getElementById('remainingBudgetValue');
+      const upcomingEl = document.getElementById('upcomingBillsValue');
+      const savingsEl = document.getElementById('savingsValue');
+
+      // compute monthly spend (sum of all expenses)
+      const monthlySpend = expenses.reduce((s,e) => s + Number(e.amount || 0), 0);
+      const remaining = stipend - monthlySpend - savingsTotal;
+      const upcomingBillsTotal = alerts
+        .filter(a => a.isBill)
+        .reduce((s,a) => s + (Number(a.amount) || 0), 0);
+
+      if (monthlySpendEl) monthlySpendEl.textContent = `₹${Math.round(monthlySpend)}`;
+      if (remainingEl) remainingEl.textContent = `₹${Math.round(remaining)}`;
+      if (upcomingEl) upcomingEl.textContent = `₹${Math.round(upcomingBillsTotal)}`;
+      if (savingsEl) savingsEl.textContent = `₹${Math.round(savingsTotal)}`;
+
+      // Budget alerts (show top 6 alerts)
+      const dashAlertsList = document.getElementById('dashboardAlerts');
+      if (dashAlertsList) {
+        dashAlertsList.innerHTML = '';
+        if (alerts.length === 0) {
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="list-item-content" style="color:var(--muted);font-weight:600">No alerts</span>`;
+          dashAlertsList.appendChild(li);
+        } else {
+          alerts.slice().reverse().slice(0,6).forEach(a => {
+            const li = document.createElement('li');
+            const amtPart = a.amount ? ` – ₹${Math.round(a.amount)}` : '';
+            li.innerHTML = `<span class="list-item-content">${escapeHtml(a.text)}${amtPart}</span>
+                            <button class="delete-btn" onclick="deleteAlert('${a.id}')">×</button>`;
+            dashAlertsList.appendChild(li);
+          });
+        }
       }
+
+      // Quick actions
+      renderQuickActions();
+
+      // charts
+      renderCharts();
     }
-    
-    // Add expense function
-    function addExpense() {
-      const name = document.getElementById("expenseName").value;
-      const amount = document.getElementById("expenseAmount").value;
-      if(name && amount) {
-        const list = document.getElementById("expenseList");
-        const li = document.createElement("li");
-        li.innerHTML = `<span class="list-item-content">${name} – ₹${amount}</span><button class="delete-btn" onclick="deleteItem(this)">×</button>`;
+
+    /*******************************
+     * Expenses functions
+     *******************************/
+    function renderExpenses() {
+      const list = document.getElementById('expenseList');
+      if (!list) return;
+      list.innerHTML = '';
+      if (expenses.length === 0) {
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="list-item-content" style="color:var(--muted);font-weight:600">No transactions yet</span>`;
         list.appendChild(li);
-        document.getElementById("expenseName").value = "";
-        document.getElementById("expenseAmount").value = "";
+        return;
       }
+      // newest first
+      expenses.slice().reverse().forEach(exp => {
+        const li = document.createElement('li');
+        const dateStr = exp.date ? ` (${new Date(exp.date).toLocaleDateString()})` : '';
+        li.innerHTML = `<span class="list-item-content">${escapeHtml(exp.category)} – ₹${Math.round(exp.amount)}${dateStr}</span>
+                        <button class="delete-btn" onclick="deleteExpense('${exp.id}')">×</button>`;
+        list.appendChild(li);
+      });
+      // update dashboard as well
+      renderDashboard();
     }
-    
-    // Add goal function
-    function addGoal() {
-      const name = document.getElementById("goalName").value;
-      const target = document.getElementById("goalTarget").value;
-      if(name && target) {
-        const list = document.getElementById("goalsList");
-        const li = document.createElement("li");
+
+    function addExpense() {
+      const nameEl = document.getElementById('expenseName');
+      const amtEl = document.getElementById('expenseAmount');
+      if (!nameEl || !amtEl) return;
+      const name = nameEl.value.trim();
+      const amount = Number(amtEl.value);
+      if (!name) { alert('Please enter an expense category.'); return; }
+      if (!Number.isFinite(amount) || amount <= 0) { alert('Please enter a valid positive amount.'); return; }
+      const newExp = { id: genId('exp'), category: name, amount: amount, note: '', date: new Date().toISOString() };
+      expenses.push(newExp);
+      saveStorage();
+      nameEl.value = '';
+      amtEl.value = '';
+      renderExpenses();
+    }
+
+    function deleteExpense(id) {
+      const idx = expenses.findIndex(e => e.id === id);
+      if (idx === -1) return;
+      if (!confirm('Are you sure you want to delete this expense?')) return;
+      expenses.splice(idx,1);
+      saveStorage();
+      renderExpenses();
+    }
+
+    function clearAllExpenses() {
+      if (expenses.length === 0) return;
+      if (!confirm('Are you sure you want to delete all expenses?')) return;
+      expenses = [];
+      saveStorage();
+      renderExpenses();
+    }
+
+    /*******************************
+     * Goals functions
+     *******************************/
+    function renderGoals() {
+      const list = document.getElementById('goalsList');
+      if (!list) return;
+      list.innerHTML = '';
+      if (goals.length === 0) {
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="list-item-content" style="color:var(--muted);font-weight:600">No goals set</span>`;
+        list.appendChild(li);
+        return;
+      }
+      goals.forEach(g => {
+        const pct = g.target && g.target > 0 ? Math.min(100, Math.round((g.saved / g.target) * 100)) : 0;
+        const li = document.createElement('li');
         li.innerHTML = `
           <div class="list-item-content">
-            ${name} – ₹0 / ₹${target}
-            <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+            ${escapeHtml(g.name)} – ₹${Math.round(g.saved)} / ₹${Math.round(g.target)}
+            <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
           </div>
-          <button class="delete-btn" onclick="deleteItem(this)">×</button>
+          <button class="delete-btn" onclick="deleteGoal('${g.id}')">×</button>
         `;
         list.appendChild(li);
-        document.getElementById("goalName").value = "";
-        document.getElementById("goalTarget").value = "";
-      }
+      });
     }
-    
-    // Add alert function
-    function addAlert() {
-      const alertText = document.getElementById("alertText").value;
-      if(alertText) {
-        const list = document.getElementById("alertsList");
-        const li = document.createElement("li");
-        li.innerHTML = `<span class="list-item-content">⚠ ${alertText}</span><button class="delete-btn" onclick="deleteItem(this)">×</button>`;
-        list.appendChild(li);
-        document.getElementById("alertText").value = "";
-      }
+
+    function addGoal() {
+      const nameEl = document.getElementById('goalName');
+      const targetEl = document.getElementById('goalTarget');
+      if (!nameEl || !targetEl) return;
+      const name = nameEl.value.trim();
+      const target = Number(targetEl.value);
+      if (!name) { alert('Please enter a goal name.'); return; }
+      if (!Number.isFinite(target) || target <= 0) { alert('Please enter a valid positive target.'); return; }
+      const g = { id: genId('goal'), name, saved: 0, target };
+      goals.push(g);
+      saveStorage();
+      nameEl.value = '';
+      targetEl.value = '';
+      renderGoals();
     }
-    
-    // Clear all functions
-    function clearAllExpenses() {
-      if(confirm("Are you sure you want to delete all expenses?")) {
-        document.getElementById("expenseList").innerHTML = "";
-      }
+
+    function deleteGoal(id) {
+      const idx = goals.findIndex(g => g.id === id);
+      if (idx === -1) return;
+      if (!confirm('Delete this goal?')) return;
+      goals.splice(idx,1);
+      saveStorage();
+      renderGoals();
     }
-    
+
     function clearAllGoals() {
-      if(confirm("Are you sure you want to delete all goals?")) {
-        document.getElementById("goalsList").innerHTML = "";
-      }
+      if (goals.length === 0) return;
+      if (!confirm('Are you sure you want to delete all goals?')) return;
+      goals = [];
+      saveStorage();
+      renderGoals();
     }
-    
+
+    /*******************************
+     * Alerts functions
+     *******************************/
+    // parse alert text to extract amount and whether it's a bill
+    function parseAlertText(text) {
+      const lower = text.toLowerCase();
+      // detect amount (₹ or plain numbers)
+      let amount = null;
+      // find patterns like ₹1234 or 1234
+      const rs = text.match(/₹\s*([0-9]+(?:\.[0-9]+)?)/);
+      if (rs && rs[1]) amount = Number(rs[1]);
+      else {
+        const m = text.match(/([0-9]+(?:\.[0-9]+)?)/);
+        if (m && m[1]) amount = Number(m[1]);
+      }
+      // detect keywords for bills
+      const billKeywords = ['bill','due','rent','electricity','mobile recharge','recharge','internet','water'];
+      const isBill = billKeywords.some(k => lower.includes(k));
+      return { amount: isFinite(amount) ? amount : null, isBill: isBill };
+    }
+
+    function renderAlerts() {
+      const list = document.getElementById('alertsList');
+      if (!list) return;
+      list.innerHTML = '';
+      if (alerts.length === 0) {
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="list-item-content" style="color:var(--muted);font-weight:600">No notifications</span>`;
+        list.appendChild(li);
+        return;
+      }
+      alerts.slice().reverse().forEach(a => {
+        const amt = a.amount ? ` – ₹${Math.round(a.amount)}` : '';
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="list-item-content">${escapeHtml(a.text)}${amt}</span>
+                        <button class="delete-btn" onclick="deleteAlert('${a.id}')">×</button>`;
+        list.appendChild(li);
+      });
+      // ensure dashboard values update as well
+      renderDashboard();
+    }
+
+    function addAlert() {
+      const el = document.getElementById('alertText');
+      if (!el) return;
+      const text = el.value.trim();
+      if (!text) { alert('Please enter an alert text.'); return; }
+      const parsed = parseAlertText(text);
+      const a = { id: genId('alert'), text, amount: parsed.amount, isBill: parsed.isBill };
+      alerts.push(a);
+      saveStorage();
+      el.value = '';
+      renderAlerts();
+    }
+
+    function deleteAlert(id) {
+      const idx = alerts.findIndex(a => a.id === id);
+      if (idx === -1) return;
+      if (!confirm('Delete this alert?')) return;
+      alerts.splice(idx,1);
+      saveStorage();
+      renderAlerts();
+    }
+
     function clearAllAlerts() {
-      if(confirm("Are you sure you want to delete all alerts?")) {
-        document.getElementById("alertsList").innerHTML = "";
-      }
+      if (alerts.length === 0) return;
+      if (!confirm('Are you sure you want to delete all alerts?')) return;
+      alerts = [];
+      saveStorage();
+      renderAlerts();
     }
-    
-    function clearQuickExpenses() {
-      if(confirm("Clear quick expense field?")) {
-        document.querySelector('.form-inline input').value = "";
+
+    /*******************************
+     * Quick Actions functions
+     *******************************/
+    function renderQuickActions() {
+      const list = document.getElementById('quickActionsList');
+      if (!list) return;
+      list.innerHTML = '';
+      if (quickActions.length === 0) {
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="list-item-content" style="color:var(--muted);font-weight:600">No quick actions yet</span>`;
+        list.appendChild(li);
+        return;
       }
+      quickActions.slice().reverse().forEach((q, idxRev) => {
+        // idxRev is index in reversed array; compute original index
+        const idx = quickActions.length - 1 - idxRev;
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="list-item-content">${escapeHtml(q.label)} – ₹${Math.round(q.amount)}</span>
+                        <button class="delete-btn" onclick="deleteQuickAction(${idx})">×</button>`;
+        list.appendChild(li);
+      });
     }
-    
-    // Chart.js setup
-    function initCharts() {
-      const ctx = document.getElementById('lineChart').getContext('2d');
-      new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: ['Jan','Feb','Mar','Apr','May','Jun'],
-          datasets: [{
-            label:'Expenses',
-            data:[1200,1300,1150,1400,1380,1500],
-            borderColor:'#FFD54F',
-            backgroundColor:'rgba(255,213,79,0.1)',
-            tension:0.3
-          }]
-        },
-        options: {
-          plugins:{legend:{display:false}},
-          scales:{
-            x:{ticks:{color:'#888'}, grid:{color:'#222'}},
-            y:{ticks:{color:'#888'}, grid:{color:'#222'}}
-          }
+
+    function addQuickExpense() {
+      const input = document.getElementById('quickExpenseInput');
+      if (!input) return;
+      const raw = input.value.trim();
+      if (!raw) { alert('Enter a quick expense like "Coffee - 80" or just "80".'); return; }
+
+      // Try splits on en-dash / hyphen
+      let parts = raw.split('–');
+      if (parts.length === 1) parts = raw.split('-');
+
+      let label = '', amount = NaN;
+
+      if (parts.length > 1) {
+        label = parts.slice(0, -1).join('-').trim();
+        amount = parseFloat(parts[parts.length - 1].replace(/[^\d.]/g, ''));
+      } else {
+        // trailing number check: "Coffee 80"
+        const m = raw.match(/^(.*?)(?:\s+)?([0-9]+(?:\.[0-9]+)?)$/);
+        if (m) {
+          label = m[1].trim();
+          amount = parseFloat(m[2]);
+        } else {
+          amount = parseFloat(raw.replace(/[^\d.]/g, ''));
+          label = 'Quick';
+        }
+      }
+
+      if (isNaN(amount) || amount <= 0) { alert('Please include a valid positive amount (e.g. "Coffee - 80").'); return; }
+      if (!label) label = 'Quick';
+      quickActions.push({ label, amount });
+      saveStorage();
+      input.value = '';
+      renderQuickActions();
+    }
+
+    function deleteQuickAction(idx) {
+      if (!Number.isInteger(idx)) return;
+      if (!quickActions[idx]) return;
+      if (!confirm('Delete this quick expense?')) return;
+      quickActions.splice(idx,1);
+      saveStorage();
+      renderQuickActions();
+    }
+
+    function clearAllQuickActions() {
+      if (quickActions.length === 0) return;
+      if (!confirm('Delete all quick actions?')) return;
+      quickActions = [];
+      saveStorage();
+      renderQuickActions();
+    }
+
+    /*******************************
+     * Stipend & Savings (Profile)
+     *******************************/
+    function renderProfile() {
+      // populate inputs with current values
+      const stipendInput = document.getElementById('stipendInput');
+      const savingsInput = document.getElementById('savingsInput');
+      if (stipendInput) stipendInput.value = stipend;
+      if (savingsInput) savingsInput.value = savingsTotal;
+    }
+
+    function saveStipend() {
+      const el = document.getElementById('stipendInput');
+      if (!el) return;
+      const v = Number(el.value);
+      if (!Number.isFinite(v) || v <= 0) { alert('Enter a valid positive monthly budget.'); return; }
+      stipend = Math.round(v);
+      saveStorage();
+      renderDashboard();
+      alert('Monthly budget updated.');
+    }
+
+    function saveSavings() {
+      const el = document.getElementById('savingsInput');
+      if (!el) return;
+      const v = Number(el.value);
+      if (!Number.isFinite(v) || v < 0) { alert('Enter a valid non-negative savings amount.'); return; }
+      savingsTotal = Math.round(v);
+      saveStorage();
+      renderDashboard();
+      alert('Savings updated.');
+    }
+
+    /*******************************
+     * Charts (line + pie)
+     *******************************/
+    function getLastSixMonthsLabelsAndSums() {
+      // return { labels: [...], sums: [...] } for last 6 months ending this month
+      const labels = [];
+      const sums = [];
+      const now = new Date();
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const monthLabel = d.toLocaleString('default', { month: 'short' });
+        labels.push(monthLabel);
+        sums.push(0);
+      }
+      // map of monthKey -> index
+      const monthIndex = {};
+      const base = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+      for (let i = 0; i < 6; i++) {
+        const key = `${base.getFullYear()}-${String(base.getMonth()+i).padStart(2,'0')}`;
+        monthIndex[key] = i;
+      }
+      // aggregate expenses by month
+      expenses.forEach(e => {
+        const dt = e.date ? new Date(e.date) : null;
+        if (!dt || isNaN(dt)) return;
+        // compute offset from base month
+        const diffMonths = (dt.getFullYear() - base.getFullYear()) * 12 + (dt.getMonth() - base.getMonth());
+        if (diffMonths >= 0 && diffMonths < 6) {
+          sums[diffMonths] += Number(e.amount || 0);
         }
       });
-      const ctx2 = document.getElementById('pieChart').getContext('2d');
-      new Chart(ctx2, {
-        type:'doughnut',
-        data:{
-          labels:['Food','Transport','Entertainment','Education','Shopping'],
-          datasets:[{
-            data:[25,15,20,18,22],
-            backgroundColor:['#FFD54F','#FFC107','#FFEB3B','#E0C200','#7f7f7f']
-          }]
-        },
-        options:{plugins:{legend:{labels:{color:'#aaa'}}}}
-      });
+      return { labels, sums };
     }
-    
-    // Load default page
-    loadPage("dashboard");
+
+    function renderCharts() {
+      // Destroy old instances
+      if (lineChartInstance) { try { lineChartInstance.destroy(); } catch(e){} lineChartInstance = null; }
+      if (pieChartInstance) { try { pieChartInstance.destroy(); } catch(e){} pieChartInstance = null; }
+
+      // Line chart
+      const lc = document.getElementById('lineChart');
+      if (lc) {
+        const { labels, sums } = getLastSixMonthsLabelsAndSums();
+        const ctx = lc.getContext('2d');
+        lineChartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label:'Expenses',
+              data:sums.map(v => Math.round(v)),
+              borderColor:'#FFD54F',
+              backgroundColor:'rgba(255,213,79,0.1)',
+              tension:0.3
+            }]
+          },
+          options: {
+            plugins:{legend:{display:false}},
+            scales:{
+              x:{ticks:{color:'#888'}, grid:{color:'#222'}},
+              y:{ticks:{color:'#888'}, grid:{color:'#222'}}
+            }
+          }
+        });
+      }
+
+      // Pie chart (categories)
+      const pc = document.getElementById('pieChart');
+      if (pc) {
+        // Group expenses by category
+        const map = {};
+        expenses.forEach(e => {
+          const cat = (e.category || 'Other').trim();
+          const key = cat || 'Other';
+          map[key] = (map[key] || 0) + Number(e.amount || 0);
+        });
+        let labels = [], data = [];
+        if (Object.keys(map).length === 0) {
+          // fallback to defaults
+          labels = ['Food','Transport','Entertainment','Education','Shopping'];
+          data = [25,15,20,18,22];
+        } else {
+          labels = Object.keys(map);
+          data = labels.map(k => Math.round(map[k]));
+        }
+        const bgColors = ['#FFD54F','#FFC107','#FFEB3B','#E0C200','#7f7f7f'];
+        // create colors array cycling through bgColors
+        const colors = labels.map((_,i) => bgColors[i % bgColors.length]);
+
+        const ctx2 = pc.getContext('2d');
+        pieChartInstance = new Chart(ctx2, {
+          type:'doughnut',
+          data:{
+            labels,
+            datasets:[{
+              data,
+              backgroundColor: colors
+            }]
+          },
+          options:{plugins:{legend:{labels:{color:'#aaa'}}}}
+        });
+      }
+    }
+
+    /*******************************
+     * Initialization
+     *******************************/
+    // initialize storage and render default page
+    loadStorage();
+
+    // Load default page (or last visited)
+    loadPage();
+
+    // make sure we re-render dashboard charts when window regains focus (optional)
+    window.addEventListener('focus', () => {
+      renderDashboard();
+    });
+
+    /*******************************
+     * Expose some functions globally (needed for inline onclick handlers)
+     *******************************/
+    window.addExpense = addExpense;
+    window.clearAllExpenses = clearAllExpenses;
+    window.deleteExpense = deleteExpense;
+
+    window.addGoal = addGoal;
+    window.deleteGoal = deleteGoal;
+    window.clearAllGoals = clearAllGoals;
+
+    window.addAlert = addAlert;
+    window.deleteAlert = deleteAlert;
+    window.clearAllAlerts = clearAllAlerts;
+
+    window.addQuickExpense = addQuickExpense;
+    window.deleteQuickAction = deleteQuickAction;
+    window.clearAllQuickActions = clearAllQuickActions;
+
+    window.saveStipend = saveStipend;
+    window.saveSavings = saveSavings;
   </script>
 </body>
 </html>
